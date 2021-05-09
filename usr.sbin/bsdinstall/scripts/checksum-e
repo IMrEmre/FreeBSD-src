@@ -26,30 +26,46 @@
 #
 # $FreeBSD$
 
-TMP_FSTAB=/tmp/bsdinstall-tmp-fstab
+test -f $BSDINSTALL_DISTDIR/MANIFEST || exit 0
 
-cat $PATH_FSTAB | awk -v BSDINSTALL_CHROOT=$BSDINSTALL_CHROOT '{
-	if ($2 ~ "^/.*") {
-		fsname = $2;
-		if (fsname == "/")
-			fsname = ""
-		printf("%s\t%s%s\t%s\t%s\t%s\t%s\n", $1, BSDINSTALL_CHROOT,
-		    fsname, $3, $4, $5, $6);
-	}
-}' > $TMP_FSTAB
+percentage=0
+for dist in $DISTRIBUTIONS; do
+	distname=$(basename $dist .txz)
+	eval "status_$distname=7"
 
-FILESYSTEMS=`cat $TMP_FSTAB | awk '/^[^#].*/ {if ($2 ~ "^/.*") printf("%s\n", $2);}' | sort -t /`
+	items=""
+	for i in $DISTRIBUTIONS; do
+		items="$items $i `eval echo \\\${status_$(basename $i .txz):-Pending}`"
+	done
+	dialog --backtitle "pfSense Installer" --title "Checksum Verification" \
+	    --mixedgauge "Verifying checksums of selected distributions." \
+	    0 0 $percentage $items
 
-for i in $FILESYSTEMS; do
-	mkdir -p $i 2>/dev/null
-	MNTERROR=`mount -F $TMP_FSTAB $i 2>&1`
-	if [ $? -ne 0 ]; then
-		dialog --backtitle "AeSense Installer" --title "Error" \
-		    --msgbox "Error mounting partition $i:\n$MNTERROR" 0 0
+	CK=`sha256 -q $BSDINSTALL_DISTDIR/$dist`
+	awk -v checksum=$CK -v dist=$dist -v found=0 '{
+		if (dist == $1) {
+			found = 1
+			if (checksum == $2)
+				exit(0)
+			else
+				exit(2)
+		}
+	} END {if (!found) exit(1);}' $BSDINSTALL_DISTDIR/MANIFEST
+
+	CK_VALID=$?
+	if [ $CK_VALID -le 1 ]; then
+		if [ $CK_VALID -eq 0 ]; then
+			eval "status_$distname=2"
+		else
+			eval "status_$distname=6"
+		fi
+		percentage=$(echo $percentage + 100/`echo $DISTRIBUTIONS | wc -w` | bc)
+	else
+		eval "status_$distname=1"
+		dialog --backtitle "pfSense Installer" --title "Error" \
+		    --msgbox "The checksum for $dist does not match. It may have become corrupted, and should be redownloaded." 0 0
 		exit 1
 	fi
 done
 
-# User might want a shell and require devfs, so mount it
-mkdir $BSDINSTALL_CHROOT/dev 2>/dev/null
-mount -t devfs devfs $BSDINSTALL_CHROOT/dev
+exit 0
